@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block body %}
+  <div class="card" style="max-width:920px;margin:24px auto;">
+    <h2 style="margin:0">{{ title }}</h2>
+    <p class="muted">Aquí irá el contenido de {{ title }} (gráficos, tablas y controles).</p>
+    <p><a class="btn" href="{{ url_for('dashboard') }}" 
+        style="text-decoration:none;display:inline-block;padding:.6rem 1rem;border-radius:10px;background:#1f6feb;color:#fff">Volver al dashboard</a></p>
+  </div>
+{% endblock %}

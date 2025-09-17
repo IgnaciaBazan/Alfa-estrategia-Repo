@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}App{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;padding:24px;background:#0b1e3b;color:#fff}
+    .card{background:#10284a;padding:24px;border-radius:12px;max-width:420px;margin:24px auto;box-shadow:0 10px 30px rgba(0,0,0,.2)}
+    label{display:block;margin:.5rem 0 .25rem}
+    input{width:100%;padding:.6rem;border-radius:8px;border:none;margin-bottom:1rem}
+    button{padding:.6rem 1rem;border:none;border-radius:8px;cursor:pointer}
+    .btn{background:#1f6feb;color:white}
+    .links a{color:#9ecbff}
+    .flash{max-width:420px;margin:0 auto 8px auto;padding:10px;border-radius:8px}
+    .flash.success{background:#144d14}
+    .flash.danger{background:#5a1414}
+    .flash.warning{background:#5a4a14}
+    .flash.info{background:#144a5a}
+  </style>
+</head>
+<body>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for cat, msg in messages %}
+        <div class="flash {{cat}}">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+  {% block body %}{% endblock %}
+</body>
+</html>
