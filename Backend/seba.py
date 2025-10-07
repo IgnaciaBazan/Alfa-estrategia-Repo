@@ -4,6 +4,7 @@ from __future__ import annotations
 # --- FastAPI & core ---
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
 from pathlib import Path
 from typing import Optional, List, Generator
 from datetime import datetime, timedelta
@@ -14,7 +15,7 @@ from sqlalchemy import select
 from pydantic import BaseModel, field_validator
 
 # --- SQLAlchemy ---
-from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, DateTime, select, func
+from sqlalchemy import create_engine, Column, Integer, String, Text, ForeignKey, DateTime, select, func, Date, Numeric
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker, Session
 
 # --- Auth (password & JWT) ---
@@ -22,7 +23,9 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from contextlib import asynccontextmanager
 
-
+import re
+from enum import Enum
+from datetime import date
 
 # ==============================
 # Configuración general
@@ -34,9 +37,10 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-#pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-#print(pwd.hash("hola123"))
-
+pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+#hash_db= "$2b$12$p0E8i7ppvQ6Tn3TgM9puNuwZ3RyFU6IVg8SX1X6L7gKFKqoExofZS"
+#print("OK?", pwd.verify("contraseña2", hash_db))
+print(pwd.hash("clave123"))
 def verify_password(plain: str, password_hash: str) -> bool:
     return pwd_context.verify(plain, password_hash)
 
@@ -47,6 +51,7 @@ def create_access_token(data: dict, minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES) 
     to_encode = data.copy()
     to_encode["exp"] = datetime.utcnow() + timedelta(minutes=minutes)
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
 
 
 Base = declarative_base()
@@ -78,9 +83,66 @@ DATABASE_URL = "mysql+pymysql://root:ruta@localhost:3306/colegio_db"
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> UserModel:
+    cred_exc = HTTPException(status_code=401, detail="No autorizado")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        uid = payload.get("uid")
+        if uid is None:
+            raise cred_exc
+    except JWTError:
+        raise cred_exc
+    user = db.get(UserModel, uid)
+    if not user or not user.is_active:
+        raise cred_exc
+    return user
+
+def require_role(*roles: str):
+    def _dep(user: UserModel = Depends(get_current_user)) -> UserModel:
+        if user.role not in roles:
+            raise HTTPException(status_code=403, detail="Permisos insuficientes")
+        return user
+    return _dep
+
 # ==============================
 # Utilidades & validaciones
 # ==============================
+def _dv_mod11(num: str) -> str:
+    serie = [2,3,4,5,6,7]
+    s, i = 0, 0
+    for d in reversed(num):
+        s += int(d) * serie[i % len(serie)]
+        i += 1
+    resto = 11 - (s % 11)
+    if resto == 11: return "0"
+    if resto == 10: return "K"
+    return str(resto)
+
+def normalize_rut(rut: str) -> str:
+    s = re.sub(r"[^0-9kK]", "", rut or "")
+    if len(s) < 2:
+        raise HTTPException(status_code=400, detail="RUT inválido")
+    cuerpo, dv = s[:-1], s[-1].upper()
+    if not cuerpo.isdigit():
+        raise HTTPException(status_code=400, detail="RUT inválido")
+    if _dv_mod11(cuerpo) != dv:
+        # usamos mismo mensaje para no filtrar info
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+    # PRESERVA CEROS A LA IZQUIERDA
+    return cuerpo + dv
 
 def asdict(model: BaseModel) -> dict:
     if hasattr(model, "model_dump"):
@@ -158,14 +220,83 @@ class Evidence(EvidenceCreate):
     indicator_id: int
     uploaded_at: datetime
 
+# ---- Planes Estratégicos ----
+class DimensionEnum(str, Enum):
+    LIDERAZGO = "LIDERAZGO"
+    GESTION_PEDAGOGICA = "GESTION_PEDAGOGICA"
+    CONVIVENCIA_ESCOLAR = "CONVIVENCIA_ESCOLAR"
+    GESTION_RECURSOS = "GESTION_RECURSOS"
+class RoleEnum(str, Enum):
+    editor = "editor"
+    viewer = "viewer"
+
+
+class StrategicPlanCreate(BaseModel):
+    dimension: DimensionEnum
+    colegio: str                          # nombre del colegio (v1 simple; luego puedes hacer catálogo)
+    objetivo_estrategico: str
+    estrategia: str
+    subdimension: Optional[str] = None
+    accion: str
+    descripcion: Optional[str] = None
+    fecha_inicio: date
+    fecha_termino: date
+    programa_asociado: Optional[str] = None
+    responsable: str
+
+    @field_validator("fecha_termino")
+    @classmethod
+    def _fin_despues_de_inicio(cls, v: date, info):
+        ini = info.data.get("fecha_inicio")
+        if ini and v < ini:
+            raise ValueError("La Fecha Término debe ser mayor o igual a la Fecha Inicio")
+        return v
+class StrategicResourceCreate(BaseModel):
+    recursos_necesarios: Optional[str] = None
+    ate: Optional[str] = None
+    tic: Optional[str] = None
+    planes: Optional[str] = None
+    medios_verificacion: Optional[str] = None
+    monto_subvencion_general: Optional[int] = 0
+    monto_sep: Optional[int] = 0
+    monto_pie: Optional[int] = 0
+    monto_eib: Optional[int] = 0
+    monto_mantenimiento: Optional[int] = 0
+    monto_pro_retencion: Optional[int] = 0
+    monto_internado: Optional[int] = 0
+    monto_reforzamiento: Optional[int] = 0
+    monto_faep: Optional[int] = 0
+    monto_aporte_municipal: Optional[int] = 0
+    monto_total: Optional[int] = 0
+
+class StrategicResource(StrategicResourceCreate):
+    id: int
+    plan_id: int
+
+class StrategicPlan(StrategicPlanCreate):
+    id: int
+    created_at: datetime
+
 # --- Login schemas ---
 class LoginRequest(BaseModel):
-    username: str
+    rut: str
     password: str
 
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    
+class MeOut(BaseModel):
+    id: int
+    rut: str
+    name: str
+    email: str
+    role: str
+    is_active: bool
+
+@app.get("/auth/me", response_model=MeOut)
+def me(u: UserModel = Depends(get_current_user)):
+    return MeOut(id=u.id, rut=u.rut, name=u.name, email=u.email, role=u.role, is_active=u.is_active)
 
 # ==============================
 # Modelos ORM (tablas)
@@ -213,26 +344,69 @@ class EvidenceModel(Base):
 class UserModel(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
+    rut = Column(String(12), unique=True, nullable=False, index=True)  # <- nuevo campo 
     name = Column(String(190), unique=True, nullable=False, index=True)  # <- antes username
     email = Column(String(190), unique=True, nullable=False, index=True)
     password = Column(String(255), nullable=False)                      # <- antes password_hash
     is_active = Column(Boolean, nullable=False, server_default="1")
+    role = Column(String(20), nullable=False, server_default="viewer")
     created_at = Column(DateTime, server_default=func.current_timestamp())
 
-# ==============================
-# DB dependency (una sesión por request)
-# ==============================
+class StrategicPlanModel(Base):
+    __tablename__ = "strategic_plans"
+    id = Column(Integer, primary_key=True, index=True)
 
-def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
-    try:
-        yield db
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+    # guarda el texto de la dimensión (validamos con Enum en Pydantic)
+    dimension = Column(String(40), nullable=False, index=True)
+
+    colegio = Column(String(200), nullable=False)
+    objetivo_estrategico = Column(Text, nullable=False)
+    estrategia = Column(Text, nullable=False)
+    subdimension = Column(String(120), nullable=True)
+    accion = Column(String(255), nullable=False)
+    descripcion = Column(Text, nullable=True)
+
+    fecha_inicio = Column(Date, nullable=False)
+    fecha_termino = Column(Date, nullable=False)
+
+    programa_asociado = Column(String(255), nullable=True)
+    responsable = Column(String(120), nullable=False)
+
+    created_at = Column(DateTime, server_default=func.current_timestamp())
+    resources = relationship(
+        "StrategicResourceModel",
+        back_populates="plan",
+        cascade="all, delete-orphan"
+    )
+#recursos 
+class StrategicResourceModel(Base):
+    __tablename__ = "plan_resources"
+
+    id   = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(Integer, ForeignKey("strategic_plans.id", ondelete="CASCADE"),
+                     nullable=False, index=True)
+
+    # campos “texto”
+    recursos_necesarios   = Column(Text, nullable=True)
+    ate                   = Column(String(120), nullable=True)
+    tic                   = Column(String(120), nullable=True)
+    planes                = Column(String(255), nullable=True)
+    medios_verificacion   = Column(Text, nullable=True)
+
+    # montos (elige Integer si no usarás decimales)
+    monto_subvencion_general = Column(Integer, nullable=True, default=0)
+    monto_sep                = Column(Integer, nullable=True, default=0)
+    monto_pie                = Column(Integer, nullable=True, default=0)
+    monto_eib                = Column(Integer, nullable=True, default=0)
+    monto_mantenimiento      = Column(Integer, nullable=True, default=0)
+    monto_pro_retencion      = Column(Integer, nullable=True, default=0)
+    monto_internado          = Column(Integer, nullable=True, default=0)
+    monto_reforzamiento      = Column(Integer, nullable=True, default=0)
+    monto_faep               = Column(Integer, nullable=True, default=0)
+    monto_aporte_municipal   = Column(Integer, nullable=True, default=0)
+    monto_total              = Column(Integer, nullable=True, default=0)
+
+    plan = relationship("StrategicPlanModel", back_populates="resources")
 
 # ==============================
 # Converters ORM -> Pydantic
@@ -250,6 +424,43 @@ def indicator_to_pydantic(m: IndicatorModel) -> Indicator:
 def evidence_to_pydantic(m: EvidenceModel) -> Evidence:
     return Evidence(id=m.id, indicator_id=m.indicator_id, description=m.description or "", filename=m.filename,
                     original_filename=m.original_filename, uploaded_at=m.uploaded_at)
+def plan_to_pydantic(m: StrategicPlanModel) -> StrategicPlan:
+    return StrategicPlan(
+        id=m.id,
+        dimension=m.dimension,
+        colegio=m.colegio,
+        objetivo_estrategico=m.objetivo_estrategico,
+        estrategia=m.estrategia,
+        subdimension=m.subdimension,
+        accion=m.accion,
+        descripcion=m.descripcion,
+        fecha_inicio=m.fecha_inicio,
+        fecha_termino=m.fecha_termino,
+        programa_asociado=m.programa_asociado,
+        responsable=m.responsable,
+        created_at=m.created_at,
+    )
+def Resource_to_pydantic(m: StrategicResourceModel) -> StrategicResource:
+    return StrategicResource(
+        id=m.id,
+        plan_id=m.plan_id,
+        recursos_necesarios=m.recursos_necesarios,
+        ate=m.ate,
+        tic=m.tic,
+        planes=m.planes,
+        medios_verificacion=m.medios_verificacion,
+        monto_subvencion_general=m.monto_subvencion_general,
+        monto_sep=m.monto_sep,
+        monto_pie=m.monto_pie,
+        monto_eib=m.monto_eib,
+        monto_mantenimiento=m.monto_mantenimiento,
+        monto_pro_retencion=m.monto_pro_retencion,
+        monto_internado=m.monto_internado,
+        monto_reforzamiento=m.monto_reforzamiento,
+        monto_faep=m.monto_faep,
+        monto_aporte_municipal=m.monto_aporte_municipal,
+        monto_total=m.monto_total,
+    )
 
 # ==============================
 # Rutas de negocio
@@ -420,20 +631,150 @@ from sqlalchemy import select
 
 @app.post("/auth/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    user = db.execute(
-        select(UserModel).where(UserModel.name == payload.username)
-    ).scalar_one_or_none()
-
-    if not user or not user.is_active:
+    rut_norm = normalize_rut(payload.rut)            # ← normaliza y valida DV
+    user = db.execute(select(UserModel).where(UserModel.rut == rut_norm)).scalar_one_or_none()
+    if not user or not verify_password(payload.password, user.password):  # o user.password si esa es tu columna
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
-
-    # La contraseña en DB DEBE ser un hash bcrypt
-    if not verify_password(payload.password, user.password):
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
-
-    # El 'id' no se escribe en el login; aquí solo lo metemos en el token por conveniencia (puedes quitarlo)
-    token = create_access_token({"sub": user.name, "uid": user.id})
+    token = create_access_token({"sub": user.rut, "uid": user.id, "role": user.role})
     return TokenResponse(access_token=token)
+# ==============================
+# Strategic Plans API
+# ==============================
+# ==============================
+# Strategic Plans API
+# ==============================
+# Crear plan (solo editor)
+@app.post("/plans", response_model=StrategicPlan, status_code=201)
+def create_plan(
+    payload: StrategicPlanCreate,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(require_role("editor")),  # <- aquí
+):
+    m = StrategicPlanModel(
+        dimension=payload.dimension.value,
+        colegio=payload.colegio,
+        objetivo_estrategico=payload.objetivo_estrategico,
+        estrategia=payload.estrategia,
+        subdimension=payload.subdimension,
+        accion=payload.accion,
+        descripcion=payload.descripcion,
+        fecha_inicio=payload.fecha_inicio,
+        fecha_termino=payload.fecha_termino,
+        programa_asociado=payload.programa_asociado,
+        responsable=payload.responsable,
+    )
+    db.add(m)
+    db.flush()
+    return plan_to_pydantic(m)
+
+
+# Listado (lectura: editor o viewer)
+@app.get("/plans", response_model=List[StrategicPlan])
+def list_plans(
+    dimension: Optional[DimensionEnum] = Query(None),
+    colegio: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    # si quieres requerir login incluso para ver, descomenta:
+    # _: UserModel = Depends(get_current_user),
+):
+    stmt = select(StrategicPlanModel).order_by(StrategicPlanModel.id)
+    if dimension:
+        stmt = stmt.where(StrategicPlanModel.dimension == dimension.value)
+    if colegio:
+        stmt = stmt.where(StrategicPlanModel.colegio == colegio)
+    rows = db.execute(stmt.offset(skip).limit(limit)).scalars().all()
+    return [plan_to_pydantic(r) for r in rows]
+
+
+# Catálogo de dimensiones (solo lectura)
+@app.get("/plans/dimensions", response_model=List[str])
+def list_dimensions():
+    return [d.value for d in DimensionEnum]
+
+
+# Obtener un plan (solo lectura)
+@app.get("/plans/{plan_id}", response_model=StrategicPlan)
+def get_plan(plan_id: int, db: Session = Depends(get_db)):
+    m = db.get(StrategicPlanModel, plan_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Plan no encontrado")
+    return plan_to_pydantic(m)
+
+
+# Eliminar plan (solo editor)
+@app.delete("/plans/{plan_id}", status_code=204)
+def delete_plan(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(require_role("editor")),  # <- aquí
+):
+    m = db.get(StrategicPlanModel, plan_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Plan no encontrado")
+    db.delete(m)
+    return Response(status_code=204)
+
+
+# Crear recursos (solo editor)
+@app.post("/plans/{plan_id}/resources", response_model=StrategicResource, status_code=201)
+def create_resource(
+    plan_id: int,
+    payload: StrategicResourceCreate,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(require_role("editor")),  # <- aquí
+):
+    plan = db.get(StrategicPlanModel, plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan no encontrado")
+
+    # Calcula total si no viene
+    if not payload.monto_total:
+        nums = [
+            payload.monto_subvencion_general or 0,
+            payload.monto_sep or 0,
+            payload.monto_pie or 0,
+            payload.monto_eib or 0,
+            payload.monto_mantenimiento or 0,
+            payload.monto_pro_retencion or 0,
+            payload.monto_internado or 0,
+            payload.monto_reforzamiento or 0,
+            payload.monto_faep or 0,
+            payload.monto_aporte_municipal or 0,
+        ]
+        payload.monto_total = sum(nums)
+
+    m = StrategicResourceModel(plan_id=plan_id, **asdict(payload))
+    db.add(m)
+    db.flush()
+    return Resource_to_pydantic(m)
+
+
+# Listar recursos de un plan (lectura)
+@app.get("/plans/{plan_id}/resources", response_model=List[StrategicResource])
+def list_resources(plan_id: int, db: Session = Depends(get_db)):
+    if not db.get(StrategicPlanModel, plan_id):
+        raise HTTPException(status_code=404, detail="Plan no encontrado")
+    rows = db.execute(
+        select(StrategicResourceModel).where(StrategicResourceModel.plan_id == plan_id)
+    ).scalars().all()
+    return [Resource_to_pydantic(r) for r in rows]
+
+
+# Eliminar recurso (solo editor)
+@app.delete("/resources/{resource_id}", status_code=204)
+def delete_resource(
+    resource_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserModel = Depends(require_role("editor")),  # <- aquí
+):
+    m = db.get(StrategicResourceModel, resource_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Recurso no encontrado")
+    db.delete(m)
+    return Response(status_code=204)
+
 
 # ==============================
 # Health & startup
