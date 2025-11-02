@@ -1,0 +1,23 @@
+cambios código
+
+seba.py
+class RoleEnum
+def create_goal 
+def delete_goal
+def create_indicator
+def delete_indicator
+def upload_evidence
+def upload_plan_evidence
+def delete_evidennce
+	se le agrego: user: "UserModel" = Depends(require_role("editor") 
+def update_indicator_progress
+	se le agrego: user: "UserModel" = Depends(require_role("editor", "progress_editor")
+
+app_dashboard.js
+se agrego function canEditProgress
+function showStrategicGoalsEditor
+	$view.innerHTML =
+	function refreshTable()
+function showindicatorsforgoal se cambio 
+
+function showEvidenceUpload  se cambio 
