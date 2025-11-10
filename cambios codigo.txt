@@ -1,0 +1,35 @@
+seba.py
+en terminal: pip install cloudinary
+
+import cloudinary
+import cloudinary.uploader
+import cloudinary.utils
+
+
+nueva
+	cloudinary.config( 
+  cloud_name = "TU_CLOUD_NAME", 
+  api_key = "TU_API_KEY", 
+  api_secret = "TU_API_SECRET",
+  secure = True
+)
+
+se actualizo
+ -upload_plan_evidence
+ -upload_evidence
+ -def download_upload
+ -delete_evidence
+
+dashboard.js
+showEvidenceUpload
+	refreshList
+
+
+report.js
+
+se cambio
+	generateReport
+		goal.indicators.forEach
+		renderFinalReport
+
+	
