@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
+import mimetypes
 from pathlib import Path
 from typing import Optional, List, Generator
 from datetime import datetime, timedelta, date
@@ -12,7 +13,9 @@ import re
 from enum import Enum
 from pydantic import BaseModel, field_validator, Field
 from starlette.responses import FileResponse
-
+from starlette.responses import StreamingResponse
+import requests
+import requests.utils
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, ForeignKey, DateTime, select,
     func, Date, Boolean, UniqueConstraint, Float, create_engine, case
@@ -24,13 +27,16 @@ from sqlalchemy.engine import URL
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
+import cloudinary
+import cloudinary.uploader
+import cloudinary.utils
 # ----------------------------
 # Core configuration (auth, CORS, files, DB)
 # ----------------------------
 
-SECRET_KEY = "hola123"                
+SECRET_KEY = "COLEGIO_ARZOBISPADO" 
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -69,6 +75,12 @@ def on_startup():
     Base.metadata.create_all(bind=engine)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+cloudinary.config( 
+  cloud_name = "drwbiyolo", 
+  api_key = "134946251886415", 
+  api_secret = "oisJ4SVzs9FqB7vLkcBSeEw-2Uc",
+  secure = True
+)
 UPLOAD_DIR = Path("./uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -168,6 +180,15 @@ def asdict(model: BaseModel) -> dict:
     if hasattr(model, "model_dump"):
         return model.model_dump()
     return model.dict()
+
+def get_cloudinary_resource_type(filename: str):
+    """Determina el resource_type de Cloudinary basado en la extensión."""
+    ext = Path(filename).suffix.lower()
+    if ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']:
+        return 'image'
+    if ext in ['.mp4', '.mov', '.avi']:
+        return 'video'
+    return 'raw'
 
 CURRENT_YEAR = datetime.utcnow().year
 MIN_YEAR = 1900
@@ -904,22 +925,22 @@ def upload_evidence(indicator_id: int, file: UploadFile = File(...), description
     if ext not in ALLOWED_EXTS:
         raise HTTPException(status_code=415, detail=f"Unsupported file type '{ext}'")
     
-    filename = f"{uuid.uuid4()}{ext}"
-    dest = UPLOAD_DIR / filename
-    bytes_written = 0
+    # Usaremos el UUID sin la extensión como el "public_id" en Cloudinary
+    public_id_base = str(uuid.uuid4())
+    public_id_completo = f"evidencias/{public_id_base}"
+    filename = f"{public_id_base}{ext}"
     
-    # Stream-save file
-    with dest.open("wb") as buffer:
-        while True:
-            chunk = file.file.read(COPY_CHUNK_SIZE)
-            if not chunk:
-                break
-            bytes_written += len(chunk)
-            if bytes_written > MAX_UPLOAD_BYTES:
-                buffer.close()
-                dest.unlink(missing_ok=True)
-                raise HTTPException(status_code=413, detail="File too large")
-            buffer.write(chunk)
+    try:
+        cloudinary.uploader.upload(
+            file.file,
+            public_id = public_id_completo,
+            resource_type = "auto"
+        )
+    except Exception as e:
+        print(f"Error al subir a Cloudinary: {e}")
+        if "File size too large" in str(e):
+            raise HTTPException(status_code=413, detail="El archivo es demasiado grande. El límite es de 10 MB.")
+        raise HTTPException(status_code=500, detail="Error al guardar el archivo en la nube.")
     
     # Create DB record
     m = EvidenceModel(
@@ -1175,19 +1196,21 @@ def upload_plan_evidence(plan_id: int, file: UploadFile = File(...), description
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTS:
         raise HTTPException(status_code=415, detail=f"Unsupported file type '{ext}'")
-    filename = f"{uuid.uuid4()}{ext}"
-    dest = UPLOAD_DIR / filename
-    bytes_written = 0
-    with dest.open("wb") as buffer:
-        while True:
-            chunk = file.file.read(COPY_CHUNK_SIZE)
-            if not chunk:
-                break
-            bytes_written += len(chunk)
-            if bytes_written > MAX_UPLOAD_BYTES:
-                dest.unlink(missing_ok=True)
-                raise HTTPException(status_code=413, detail="File too large")
-            buffer.write(chunk)
+    public_id_base = str(uuid.uuid4())
+    public_id_completo = f"evidencias/{public_id_base}"
+    filename = f"{public_id_base}{ext}"
+    
+    try:
+        cloudinary.uploader.upload(
+            file.file,
+            public_id = public_id_completo, 
+            resource_type = "auto"
+        )
+    except Exception as e:
+        print(f"Error al subir a Cloudinary: {e}")
+        if "File size too large" in str(e):
+            raise HTTPException(status_code=413, detail="El archivo es demasiado grande. El límite es de 10 MB.")
+        raise HTTPException(status_code=500, detail="Error al guardar el archivo en la nube.")
     m = EvidenceModel(
         plan_id=plan_id, 
         description=description,
@@ -1217,17 +1240,55 @@ def delete_evidence(evidence_id: int, db: Session = Depends(get_db), user: "User
     filename = m.filename
     db.delete(m)
     try:
-        (UPLOAD_DIR / filename).unlink(missing_ok=True)
-    except Exception:
-        pass 
+        public_id_base = Path(filename).stem
+        public_id_completo = f"evidencias/{public_id_base}"
+        res_type = get_cloudinary_resource_type(filename)
+        cloudinary.uploader.destroy(
+            public_id_completo, 
+            resource_type = res_type
+        )
+    except Exception as e:
+        print(f"Error al borrar de Cloudinary: {e}")
+        pass
     return Response(status_code=204)
 
 @app.get("/uploads/{filename}")
-def download_upload(filename: str):
-    path = UPLOAD_DIR / filename
-    if not path.exists():
+def download_upload(filename: str, db: Session = Depends(get_db)):
+    ev = db.query(EvidenceModel).filter(EvidenceModel.filename == filename).first()
+    if not ev:
+        raise HTTPException(status_code=404, detail="Registro de archivo no encontrado")
+    download_name = ev.original_filename if ev and ev.original_filename else filename
+    public_id_base = Path(filename).stem
+    public_id_completo = f"evidencias/{public_id_base}"
+    res_type = get_cloudinary_resource_type(filename)
+
+    try:
+        url, options = cloudinary.utils.cloudinary_url(
+            public_id_completo,
+            resource_type=res_type,
+            attachment="attachment",
+        )
+    except Exception as e:
+        print(f"Error al generar URL de Cloudinary: {e}")
         raise HTTPException(status_code=404, detail="Archivo no encontrado")
-    return FileResponse(path, media_type="application/octet-stream", filename=filename)
+    try:
+        r = requests.get(url, stream=True, timeout=30)
+        r.raise_for_status()
+        r.raw.decode_content = True
+        content_type = r.headers.get("Content-Type", "application/octet-stream")
+        encoded_download_name = requests.utils.quote(download_name)
+        
+        headers = {
+            "Content-Disposition": f'attachment; filename="{download_name}"; filename*=UTF-8\'\'{encoded_download_name}',
+            "Cache-Control": "no-cache"
+        }
+
+        if "Content-Length" in r.headers:
+            headers["Content-Length"] = r.headers["Content-Length"]
+        return StreamingResponse(r.raw, media_type=content_type, headers=headers)
+    except Exception as e:
+        print(f"Error proxy download from Cloudinary: {e}")
+        raise HTTPException(status_code=500, detail="Error en la descarga del archivo")
 
 @app.get("/objectives/{objective_id}/evidences", response_model=list[ObjectiveEvidenceOut])
 def list_evidences_by_objective(objective_id: int, db: Session = Depends(get_db)):

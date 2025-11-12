@@ -322,6 +322,7 @@ function canEditProgress() {
 
 // --- Generic SPA + API helpers ----------------------------------------------
 const API = "http://127.0.0.1:8000";
+try {window.API = API;} catch {} 
 const $view = document.getElementById('view');
 const $title = document.getElementById('pageTitle');
 
@@ -537,6 +538,24 @@ function showForbidden(msg = 'No tienes permisos para acceder a esta sección.')
 const plansCache = new Map();
 window.invalidatePlansCache = (dim) => dim ? plansCache.delete(dim) : plansCache.clear();
 
+// This ensures the refresh works even after the view is re-rendered.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('#btnRefrescar');
+  if (!btn) return;
+  const dimEncoded = btn.dataset.dim;
+  if (!dimEncoded) return;
+  const dim = decodeURIComponent(dimEncoded);
+  try {
+    plansCache.delete(dim);
+    console.log(`Caché de ${dim} eliminada (delegated). Forzando recarga.`);
+  } catch (err) {
+    console.warn('No se pudo borrar la caché de planes:', err);
+  }
+  // showPlanList is a function declaration (hoisted) so it's safe to call here
+  if (typeof showPlanList === 'function') showPlanList(dim);
+});
+
+
 /** Agrupa planes por objetivo dentro de una dimensión (con memoización). */
 async function getPlansByDimension(dimensionValue) {
   if (plansCache.has(dimensionValue)) return plansCache.get(dimensionValue);
@@ -581,7 +600,7 @@ async function showDashboard() {
       </article>
 
       <article class="card">
-        <header class="card__header"><h2>Recuento de Planes Estratégicos por Dimensión</h2></header>
+        <header class="card__header"><h2>Recuento de Objetivos Estratégicos por Dimensión</h2></header>
         <div class="card__body">
           <div id="objetivosBars" class="v-bars"></div>
         </div>
@@ -948,23 +967,24 @@ async function showObjectiveDetail(dimensionValue, objetivo) {
 
       <div class="card__body">
         <div class="table-wrap">
-          <table class="plan-table">
-            <thead>
-              <tr>
-                <th>Colegio</th>
-                <th>Estrategia</th>
-                <th>Subdimensiones</th>
-                <th>Acción</th>
-                <th>Descripción</th>
-                <th>Inicio</th>
-                <th>Término</th>
-                <th>Programa</th>
-                <th>Responsable</th>
-              </tr>
-            </thead>
-            <tbody id="plansTableBody"><tr><td colspan="10">Cargando acciones...</td></tr></tbody>
-          </table>
-        </div>
+          <div class ="hscroll">
+            <table class="plan-table">
+              <thead>
+                <tr>
+                  <th>Colegio</th>
+                  <th>Estrategia</th>
+                  <th>Subdimensiones</th>
+                  <th>Acción</th>
+                  <th>Descripción</th>
+                  <th>Inicio</th>
+                  <th>Término</th>
+                  <th>Programa</th>
+                  <th>Responsable</th>
+                </tr>
+              </thead>
+              <tbody id="plansTableBody"><tr><td colspan="10">Cargando acciones...</td></tr></tbody>
+            </table>
+          </div>
       </div>
     </section>
   `;
@@ -1065,6 +1085,7 @@ async function apiUploadEvidenceByPlan(planId, file, description = "") {
     document.getElementById('plan-ev-uploader').style.display = canEdit ? 'flex' : 'none';
     refresh();
   });
+
   document.getElementById('plan-ev-close').addEventListener('click', () => {
     document.getElementById('plan-ev-modal').style.display = 'none';
     CURRENT_PLAN = null;
@@ -2011,6 +2032,9 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 window.addEventListener('DOMContentLoaded', setupAccordionTransition);
 
+window.apiFetch = apiFetch; // Expose for debugging
+window.formatoMoneda = formatoMoneda; // Expose for debugging
+window.ensureObjectiveByName = ensureObjectiveByName; // Expose for debugging
 
 document.getElementById('nav-dashboard')?.addEventListener('click', e => { e.preventDefault(); location.hash = '#/dashboard'; });
 document.getElementById('nav-plan-form')?.addEventListener('click', e => { e.preventDefault(); location.hash = '#/planes/form'; });
