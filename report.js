@@ -113,10 +113,11 @@ export async function showReportesView($view, $title, esc) {
           const fetcher = window.apiFetch || apiFetch;
           const fmtMoney = window.formatoMoneda || formatoMoneda;
 
-          const [obj, goals, allPlans] = await Promise.all([
+          const [obj, goals, allPlans, currentUser] = await Promise.all([
               fetcher(`/objectives/${objId}`).then(r => r.json()),
               fetcher(`/objectives/${objId}/goals?limit=500`).then(r => r.json()),
-              fetcher(`/plans?limit=500`).then(r => r.json())
+              fetcher(`/plans?limit=500`).then(r => r.json()),
+              fetcher(`/auth/me`).then(r => r.json()) 
           ]);
 
           let totalIndicadores = 0;
@@ -154,7 +155,7 @@ export async function showReportesView($view, $title, esc) {
          }
       }
 
-          renderFinalReport(obj, goals, relevantPlans, objProgress, totalIndicadores, totalRecursos, fmtMoney);
+          renderFinalReport(obj, goals, relevantPlans, objProgress, totalIndicadores, totalRecursos, fmtMoney, currentUser);
 
       } catch (e) {
           console.error(e);
@@ -162,7 +163,7 @@ export async function showReportesView($view, $title, esc) {
       }
   }
 
-  function renderFinalReport(obj, goals, plans, objProgress, totalIndicadores, totalRecursos, fmtMoney) {
+  function renderFinalReport(obj, goals, plans, objProgress, totalIndicadores, totalRecursos, fmtMoney, user) {
       $title.textContent = "Reporte Consolidado";
       
       $view.innerHTML = `
@@ -174,7 +175,7 @@ export async function showReportesView($view, $title, esc) {
             </div>
           </header>
 
-          <div class="card__body" id="reportContent" style="padding: 2rem;">
+          <div class="card__body" id="reportContent" style="padding: 2rem; position: relative;">
 
             <div id="pdf-logo-header" style="position: absolute; top: 1.5rem; right: 2rem; display: none;">
               <img src="Imagenes/LOGOS/logo_reporte.png" alt="Logo Colegio" style="width: 200px; height: auto; opacity: 0.8;" />
@@ -401,6 +402,23 @@ export async function showReportesView($view, $title, esc) {
                     `;
               }).join('') : '<p>No hay evidencias relacionadas con las acciones.</p>' }
             </div>
+            </div> 
+            <div id="pdf-signature" style="
+                        display: none;               
+                        margin-top: 4rem;             
+                        padding-top: 1.5rem;         
+                        border-top: 1px solid #e2e8f0; 
+                        font-size: 0.8rem;
+                        color: #555;
+                        text-align: center;            
+                      ">
+                <p style="margin:0; padding:0; line-height: 1.4;">
+                  <strong>Documento Generado por:</strong><br>
+                  ${esc(user.name)}<br>
+                  RUT: ${esc(user.rut)}<br>
+                  Fecha: ${new Date().toLocaleString('es-CL')}
+                </p>
+              </div>
           </div>
         </section>
       `;
@@ -446,7 +464,7 @@ function showPdfOverlay() {
     left: 0; 
     width: 100%; 
     height: 100%; 
-    background: #ffffff; /* ¡CAMBIO! De 0.9 a sólido */
+    background: #ffffff; 
     z-index: 10000; 
     display: flex; 
     justify-content: center; 
@@ -483,6 +501,7 @@ function hidePdfOverlay() {
           const element = document.getElementById("reportContent");
           const logo = document.getElementById("pdf-logo-header"); 
           const line = document.getElementById("pdf-header-line");
+          const signature = document.getElementById("pdf-signature");
           const reportHeaderText = element.querySelector(".report-header-text");
 
           const opt = {
@@ -504,12 +523,14 @@ function hidePdfOverlay() {
           setTimeout(() => {
             if (logo) logo.style.display = 'block'; 
             if (line) line.style.display = 'block';
+            if (signature) signature.style.display = 'block';
             if (reportHeaderText) reportHeaderText.style.paddingTop = '6.6rem'; 
 
             window.html2pdf().set(opt).from(element).save().then(() => {
                 btn.disabled = false;
                 if (logo) logo.style.display = 'none'; 
                 if (line) line.style.display = 'none';
+                if (signature) signature.style.display = 'none';
                 if (reportHeaderText) reportHeaderText.style.paddingTop = '0';
                 hidePdfOverlay(); 
             }).catch((err) => {
@@ -517,6 +538,7 @@ function hidePdfOverlay() {
                 btn.disabled = false;
                 if (logo) logo.style.display = 'none';
                 if (line) line.style.display = 'none';
+                if (signature) signature.style.display = 'none';
                 if (reportHeaderText) reportHeaderText.style.paddingTop = '0';
                 hidePdfOverlay();
                 alert("Hubo un error al generar el PDF.");
